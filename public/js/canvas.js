@@ -3,13 +3,15 @@
  *
  * Composites:
  *   1. Themed background  (gradient / scene)
- *   2. Remote person      (segmented, full canvas)
- *   3. Local person       (segmented, full canvas, mirrored, on top)
- *   4. Decorative frame   (drawn on top)
- *   5. Text overlays      (date stamp, etc.)
+ *   2. Merged masks       (OR combination of remote + local segmentation)
+ *   3. Decorative frame   (drawn on top)
+ *   4. Text overlays      (date stamp, etc.)
  *
- * Both people occupy the full canvas and can overlap naturally.
- * They can adjust their camera position if needed.
+ * Layout: Full canvas usage
+ * - Both people rendered on full canvas with backgrounds removed
+ * - Local mask ORed with remote mask (lighten blend mode)
+ * - Where masks overlap = both visible
+ * - Natural composition that follows camera movement
  */
 
 // ─── Themes ──────────────────────────────────────────────────────────────────
@@ -436,6 +438,11 @@ class PhotoboothCompositor {
     this.localMask  = null;
     this.remoteMask = null;
 
+    // Combined mask canvas (OR of both masks)
+    this.combinedMask = document.createElement('canvas');
+    this.combinedMask.width = this.W;
+    this.combinedMask.height = this.H;
+
     // State
     this.running    = false;
     this.peerReady  = false;
@@ -476,6 +483,29 @@ class PhotoboothCompositor {
     this._raf = requestAnimationFrame(() => this._loop());
   }
 
+  _combineMasks() {
+    if (!this.localMask && !this.remoteMask) return null;
+
+    const combined = this.combinedMask;
+    const ctxCombined = combined.getContext('2d');
+    ctxCombined.clearRect(0, 0, combined.width, combined.height);
+
+    // Draw remote mask first
+    if (this.remoteMask) {
+      ctxCombined.drawImage(this.remoteMask, 0, 0);
+    }
+
+    // Draw local mask on top with 'lighten' blend mode (OR effect)
+    // This keeps pixels that exist in either mask
+    if (this.localMask) {
+      ctxCombined.globalCompositeOperation = 'lighten';
+      ctxCombined.drawImage(this.localMask, 0, 0);
+      ctxCombined.globalCompositeOperation = 'source-over';
+    }
+
+    return combined;
+  }
+
   _draw() {
     const { ctx, W, H } = this;
     ctx.clearRect(0, 0, W, H);
@@ -483,11 +513,12 @@ class PhotoboothCompositor {
     // 1. Background theme
     this._drawTheme();
 
-    // 2. Both people use full canvas - draw them on top of background
-    // Remote first (background layer)
-    if (this.remoteMask) this._drawPerson(this.remoteMask, 'remote');
-    // Local on top (foreground layer)
-    if (this.localMask)  this._drawPerson(this.localMask,  'local');
+    // 2. Combine both masks using OR
+    const mergedMask = this._combineMasks();
+    if (mergedMask) {
+      // Draw the merged masked result on full canvas
+      ctx.drawImage(mergedMask, 0, 0, W, H);
+    }
 
     // 3. Frame overlay
     FRAMES[this.frameIdx].draw(ctx, W, H);
@@ -507,38 +538,6 @@ class PhotoboothCompositor {
     };
     THEMES[this.themeIdx].draw(this.ctx, this.W, this.H);
     Math.random = savedRandom;
-  }
-
-  _drawPerson(maskCanvas, personType) {
-    const { ctx, W, H } = this;
-
-    const srcW = maskCanvas.width;
-    const srcH = maskCanvas.height;
-    if (srcW === 0 || srcH === 0) return;
-
-    // Scale to fill full canvas (cover mode)
-    const scale = Math.max(W / srcW, H / srcH);
-    const dw = srcW * scale;
-    const dh = srcH * scale;
-
-    // Center the scaled video on the canvas
-    const dx = (W - dw) / 2;
-    const dy = (H - dh) / 2;
-
-    ctx.save();
-
-    if (personType === 'local') {
-      // Mirror the local video so it feels natural (like a selfie)
-      // Flip horizontally around the center of the canvas
-      ctx.translate(W / 2, 0);
-      ctx.scale(-1, 1);
-      ctx.drawImage(maskCanvas, -W / 2 + dx, dy, dw, dh);
-    } else {
-      // Remote video draws normally without mirroring
-      ctx.drawImage(maskCanvas, dx, dy, dw, dh);
-    }
-
-    ctx.restore();
   }
 
   _drawDateStamp() {
