@@ -3,10 +3,13 @@
  *
  * Composites:
  *   1. Themed background  (gradient / scene)
- *   2. Remote person      (segmented, left side)
- *   3. Local person       (segmented, right side, mirrored)
+ *   2. Remote person      (segmented, full canvas)
+ *   3. Local person       (segmented, full canvas, mirrored, on top)
  *   4. Decorative frame   (drawn on top)
  *   5. Text overlays      (date stamp, etc.)
+ *
+ * Both people occupy the full canvas and can overlap naturally.
+ * They can adjust their camera position if needed.
  */
 
 // ─── Themes ──────────────────────────────────────────────────────────────────
@@ -480,28 +483,16 @@ class PhotoboothCompositor {
     // 1. Background theme
     this._drawTheme();
 
-    // 2. Divider hint (subtle center line)
-    if (this.peerReady) {
-      ctx.save();
-      ctx.strokeStyle = 'rgba(255,255,255,0.05)';
-      ctx.lineWidth   = 1;
-      ctx.setLineDash([6, 6]);
-      ctx.beginPath();
-      ctx.moveTo(W/2, 20);
-      ctx.lineTo(W/2, H - 20);
-      ctx.stroke();
-      ctx.restore();
-      ctx.setLineDash([]);
-    }
+    // 2. Both people use full canvas - draw them on top of background
+    // Remote first (background layer)
+    if (this.remoteMask) this._drawPerson(this.remoteMask, 'remote');
+    // Local on top (foreground layer)
+    if (this.localMask)  this._drawPerson(this.localMask,  'local');
 
-    // 3. People
-    if (this.remoteMask) this._drawPerson(this.remoteMask, 'left');
-    if (this.localMask)  this._drawPerson(this.localMask,  'right');
-
-    // 4. Frame overlay
+    // 3. Frame overlay
     FRAMES[this.frameIdx].draw(ctx, W, H);
 
-    // 5. Date stamp
+    // 4. Date stamp
     this._drawDateStamp();
   }
 
@@ -518,42 +509,32 @@ class PhotoboothCompositor {
     Math.random = savedRandom;
   }
 
-  _drawPerson(maskCanvas, side) {
+  _drawPerson(maskCanvas, personType) {
     const { ctx, W, H } = this;
-
-    const slotW = W / 2;
-    const slotH = H;
-    const slotX = side === 'left' ? 0 : slotW;
 
     const srcW = maskCanvas.width;
     const srcH = maskCanvas.height;
     if (srcW === 0 || srcH === 0) return;
 
-    // Scale to fill slot (cover)
-    const scale = Math.max(slotW / srcW, slotH / srcH);
+    // Scale to fill full canvas (cover mode)
+    const scale = Math.max(W / srcW, H / srcH);
     const dw = srcW * scale;
     const dh = srcH * scale;
 
-    // Center within the slot
-    const dx = slotX + (slotW - dw) / 2;
-    const dy = (slotH - dh) / 2;
+    // Center the scaled video on the canvas
+    const dx = (W - dw) / 2;
+    const dy = (H - dh) / 2;
 
     ctx.save();
 
-    // Clip strictly to this person's half
-    ctx.beginPath();
-    ctx.rect(slotX, 0, slotW, slotH);
-    ctx.clip();
-
-    if (side === 'right') {
+    if (personType === 'local') {
       // Mirror the local video so it feels natural (like a selfie)
-      // Flip horizontally around the center of the right slot
-      ctx.translate(slotX + slotW, 0);
+      // Flip horizontally around the center of the canvas
+      ctx.translate(W / 2, 0);
       ctx.scale(-1, 1);
-      // After flip, slotX maps to (slotX + slotW), so draw at mirrored dx
-      const mirroredDx = (slotX + slotW) - dx - dw;
-      ctx.drawImage(maskCanvas, mirroredDx, dy, dw, dh);
+      ctx.drawImage(maskCanvas, -W / 2 + dx, dy, dw, dh);
     } else {
+      // Remote video draws normally without mirroring
       ctx.drawImage(maskCanvas, dx, dy, dw, dh);
     }
 
