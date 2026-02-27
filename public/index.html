@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Photobooth Live 📸</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;1,400&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+  <!-- ═══════════════════════════════ LOBBY ═══════════════════════════════ -->
+  <div id="lobby" class="screen active">
+    <div class="lobby-bg">
+      <div class="film-strip top"></div>
+      <div class="film-strip bottom"></div>
+    </div>
+
+    <div class="lobby-center">
+      <div class="lobby-brand">
+        <div class="camera-icon">📷</div>
+        <h1 class="brand-title">Photobooth<em>Live</em></h1>
+        <p class="brand-sub">Two faces. One frame. Zero backgrounds.</p>
+      </div>
+
+      <div class="lobby-card">
+        <div class="tab-row">
+          <button class="tab active" id="tab-create" onclick="switchTab('create')">✦ New Room</button>
+          <button class="tab" id="tab-join" onclick="switchTab('join')">→ Join Room</button>
+        </div>
+
+        <div id="panel-create" class="panel active">
+          <p class="hint">Create a private room and share the code with your partner.</p>
+          <div class="code-box">
+            <span class="code-val" id="room-code-display">——————</span>
+            <button class="copy-btn" onclick="copyRoomCode()" title="Copy code">Copy</button>
+          </div>
+          <button class="btn-primary" onclick="generateAndJoin()">Generate Room &amp; Enter</button>
+        </div>
+
+        <div id="panel-join" class="panel">
+          <p class="hint">Enter the 6-character code your partner sent you.</p>
+          <input type="text" id="room-input" class="room-input" placeholder="ABCXYZ" maxlength="8" autocomplete="off" />
+          <button class="btn-primary" onclick="joinFromInput()">Enter Room →</button>
+        </div>
+
+        <p class="error-msg" id="error-msg"></p>
+      </div>
+
+      <p class="lobby-footer">Powered by WebRTC · MediaPipe · No server video</p>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════ BOOTH ═══════════════════════════════ -->
+  <div id="booth" class="screen">
+
+    <!-- Hidden video elements (sources for canvas) -->
+    <video id="local-video" autoplay playsinline muted style="display:none"></video>
+    <video id="remote-video" autoplay playsinline style="display:none"></video>
+
+    <!-- Sidebar: controls -->
+    <aside class="sidebar">
+      <div class="sidebar-brand">📷<br><strong>Photo</strong><br>Booth</div>
+
+      <!-- Room info -->
+      <div class="sidebar-section">
+        <label class="sidebar-label">Room</label>
+        <div class="room-pill">
+          <span id="room-label">—</span>
+          <button class="pill-copy" onclick="copyCurrentRoom()" title="Copy">⎘</button>
+        </div>
+        <div class="conn-indicator" id="conn-indicator">
+          <span class="dot waiting" id="conn-dot"></span>
+          <span id="conn-text">Waiting…</span>
+        </div>
+      </div>
+
+      <!-- Theme picker -->
+      <div class="sidebar-section">
+        <label class="sidebar-label">Scene</label>
+        <div class="theme-grid" id="theme-grid">
+          <!-- Injected by JS -->
+        </div>
+      </div>
+
+      <!-- Frame picker -->
+      <div class="sidebar-section">
+        <label class="sidebar-label">Frame</label>
+        <div class="frame-grid" id="frame-grid">
+          <!-- Injected by JS -->
+        </div>
+      </div>
+
+      <!-- Controls -->
+      <div class="sidebar-section sidebar-controls">
+        <button class="ctrl-btn" id="btn-mute" onclick="toggleMute()">🎤 Mic On</button>
+        <button class="ctrl-btn" id="btn-cam" onclick="toggleCamera()">📹 Cam On</button>
+        <button class="ctrl-btn danger" onclick="hangUp()">✕ Leave</button>
+      </div>
+    </aside>
+
+    <!-- Main photobooth area -->
+    <main class="booth-main">
+
+      <!-- Segmentation loading indicator -->
+      <div class="seg-loading" id="seg-loading">
+        <div class="seg-spinner"></div>
+        <p>Loading background removal…</p>
+      </div>
+
+      <!-- The main photobooth canvas -->
+      <div class="canvas-wrap" id="canvas-wrap">
+        <canvas id="photobooth-canvas"></canvas>
+
+        <!-- Waiting overlay when partner not yet connected -->
+        <div class="waiting-overlay" id="waiting-overlay">
+          <div class="waiting-content">
+            <div class="pulse-cam">📷</div>
+            <h2>Waiting for your partner…</h2>
+            <p>Share your room code:</p>
+            <div class="share-code-big" id="share-code-big">—</div>
+          </div>
+        </div>
+
+        <!-- Countdown overlay -->
+        <div class="countdown-overlay" id="countdown-overlay">
+          <span class="countdown-num" id="countdown-num">3</span>
+        </div>
+
+        <!-- Flash overlay -->
+        <div class="flash-overlay" id="flash-overlay"></div>
+      </div>
+
+      <!-- Capture button & strip -->
+      <div class="capture-bar">
+        <div class="photo-strip" id="photo-strip">
+          <p class="strip-hint">Your photos appear here ↓</p>
+        </div>
+        <div class="capture-actions">
+          <button class="shutter-btn" id="shutter-btn" onclick="startCountdown()">
+            <span class="shutter-inner"></span>
+          </button>
+          <div class="capture-meta">
+            <p class="capture-label">Take Photo</p>
+            <p class="capture-sub">3-second timer</p>
+          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- Scripts -->
+  <script src="/socket.io/socket.io.js"></script>
+  <!-- MediaPipe via CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation@0.1.1675465747/selfie_segmentation.js" crossorigin="anonymous"></script>
+  <script src="js/webrtc.js"></script>
+  <script src="js/segmentation.js"></script>
+  <script src="js/canvas.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

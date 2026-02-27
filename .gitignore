@@ -1,0 +1,60 @@
+# =========================
+# Node.js
+# =========================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# =========================
+# Environment variables
+# =========================
+.env
+.env.*
+!.env.example
+
+# =========================
+# Logs
+# =========================
+logs/
+*.log
+
+# =========================
+# OS files
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# Editor files
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# =========================
+# Build / temp files
+# =========================
+dist/
+build/
+.tmp/
+temp/
+
+# =========================
+# Coverage / testing
+# =========================
+coverage/
+
+# =========================
+# Optional: ngrok / local configs
+# =========================
+.ngrok2/
+
+# =========================
+# Optional: system generated
+# =========================
+*.pid
+*.seed
+*.pid.lock
