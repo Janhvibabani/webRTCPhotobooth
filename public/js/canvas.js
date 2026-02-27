@@ -483,27 +483,36 @@ class PhotoboothCompositor {
     this._raf = requestAnimationFrame(() => this._loop());
   }
 
-  _combineMasks() {
-    if (!this.localMask && !this.remoteMask) return null;
-
-    const combined = this.combinedMask;
-    const ctxCombined = combined.getContext('2d');
-    ctxCombined.clearRect(0, 0, combined.width, combined.height);
-
-    // Draw remote mask first
-    if (this.remoteMask) {
-      ctxCombined.drawImage(this.remoteMask, 0, 0);
+  _drawMaskScaled(maskCanvas, isLocal) {
+    const { ctx, W, H } = this;
+    
+    const srcW = maskCanvas.width;
+    const srcH = maskCanvas.height;
+    if (srcW === 0 || srcH === 0) {
+      console.warn(`[Canvas] ${isLocal ? 'Local' : 'Remote'} mask has 0 dimensions`);
+      return;
     }
 
-    // Draw local mask on top with 'lighten' blend mode (OR effect)
-    // This keeps pixels that exist in either mask
-    if (this.localMask) {
-      ctxCombined.globalCompositeOperation = 'lighten';
-      ctxCombined.drawImage(this.localMask, 0, 0);
-      ctxCombined.globalCompositeOperation = 'source-over';
+    // Scale to fill canvas (cover mode)
+    const scale = Math.max(W / srcW, H / srcH);
+    const dw = srcW * scale;
+    const dh = srcH * scale;
+
+    // Center on canvas
+    let dx = (W - dw) / 2;
+    let dy = (H - dh) / 2;
+
+    ctx.save();
+
+    if (isLocal) {
+      // Mirror local video (selfie effect)
+      ctx.translate(W / 2, 0);
+      ctx.scale(-1, 1);
+      dx = -W / 2 + dx;
     }
 
-    return combined;
+    ctx.drawImage(maskCanvas, dx, dy, dw, dh);
+    ctx.restore();
   }
 
   _draw() {
@@ -513,11 +522,16 @@ class PhotoboothCompositor {
     // 1. Background theme
     this._drawTheme();
 
-    // 2. Combine both masks using OR
-    const mergedMask = this._combineMasks();
-    if (mergedMask) {
-      // Draw the merged masked result on full canvas
-      ctx.drawImage(mergedMask, 0, 0, W, H);
+    // 2. Draw both masks on full canvas with lighten blend (OR effect)
+    if (this.remoteMask) {
+      this._drawMaskScaled(this.remoteMask, false);
+    }
+
+    if (this.localMask) {
+      // Use lighten blend so both are visible where they overlap
+      ctx.globalCompositeOperation = 'lighten';
+      this._drawMaskScaled(this.localMask, true);
+      ctx.globalCompositeOperation = 'source-over';
     }
 
     // 3. Frame overlay
