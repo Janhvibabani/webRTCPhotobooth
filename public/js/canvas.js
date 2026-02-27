@@ -1,146 +1,88 @@
 /**
  * canvas.js — Photobooth Canvas Compositor
  *
- * Composites:
- * 1. Themed background (gradient / scene)
- * 2. Merged masks (OR combination of remote + local segmentation)
- * 3. Decorative frame (drawn on top)
- * 4. Text overlays (date stamp, etc.)
+ * Slot-based layout (assigned by server on join):
+ *   slot 0 (first to join)  → LEFT  half
+ *   slot 1 (second to join) → RIGHT half
  *
- * Layout: Full canvas usage
- * - Both people rendered on full canvas with backgrounds removed
- * - Local mask ORed with remote mask (lighten blend mode on offscreen canvas)
- * - Where masks overlap = both visible
- * - Natural composition that follows camera movement
+ * Each client knows their own slot. "local" always goes into mySlot's region.
+ * "remote" goes into the other slot's region.
+ *
+ * When only one person is present they fill the full canvas.
  */
 
-// ─── Themes ────────────────────────────────────────────────────────────────── 
+// ─── Themes ──────────────────────────────────────────────────────────────────
 const THEMES = [
   {
     id: 'neon', label: 'Neon City', icon: '🌆',
     draw(ctx, w, h) {
-      // Deep night sky gradient
       const g = ctx.createLinearGradient(0, 0, 0, h);
-      g.addColorStop(0, '#0a0015');
-      g.addColorStop(0.5, '#10003a');
-      g.addColorStop(1, '#200050');
-      ctx.fillStyle = g;
-      ctx.fillRect(0, 0, w, h);
+      g.addColorStop(0, '#0a0015'); g.addColorStop(0.5, '#10003a'); g.addColorStop(1, '#200050');
+      ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
 
-      // City silhouette
       ctx.fillStyle = '#05000f';
       const buildings = [
-        [0, h*0.55, 60, h*0.45], [55, h*0.45, 40, h*0.55],
-        [90, h*0.5, 80, h*0.5],  [165, h*0.38, 50, h*0.62],
-        [210, h*0.52, 70, h*0.48],[275, h*0.42, 55, h*0.58],
-        [325, h*0.35, 45, h*0.65],[w-280, h*0.44, 60, h*0.56],
-        [w-225, h*0.38, 50, h*0.62],[w-180, h*0.5, 75, h*0.5],
-        [w-110, h*0.42, 55, h*0.58],[w-60, h*0.5, 65, h*0.5],
+        [0,h*.55,60,h*.45],[55,h*.45,40,h*.55],[90,h*.5,80,h*.5],[165,h*.38,50,h*.62],
+        [210,h*.52,70,h*.48],[275,h*.42,55,h*.58],[325,h*.35,45,h*.65],
+        [w-280,h*.44,60,h*.56],[w-225,h*.38,50,h*.62],[w-180,h*.5,75,h*.5],
+        [w-110,h*.42,55,h*.58],[w-60,h*.5,65,h*.5],
       ];
-      buildings.forEach(([x, y, bw, bh]) => ctx.fillRect(x, y, bw, bh));
+      buildings.forEach(([x,y,bw,bh]) => ctx.fillRect(x,y,bw,bh));
 
-      // Neon glow dots (windows)
       const neonColors = ['#ff2dd4','#00e5ff','#aaff00','#ff6600','#7b00ff'];
       ctx.save();
       for (let i = 0; i < 80; i++) {
-        const x = Math.random() * w;
-        const y = h * 0.35 + Math.random() * h * 0.5;
-        const r = 1 + Math.random() * 2;
-        const c = neonColors[Math.floor(Math.random() * neonColors.length)];
-        ctx.shadowBlur = 8; ctx.shadowColor = c;
-        ctx.fillStyle = c;
-        ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+        const x = Math.random()*w, y = h*.35+Math.random()*h*.5;
+        const r = 1+Math.random()*2, c = neonColors[Math.floor(Math.random()*neonColors.length)];
+        ctx.shadowBlur=8; ctx.shadowColor=c; ctx.fillStyle=c;
+        ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
       }
       ctx.restore();
 
-      // Ground glow
-      const groundG = ctx.createLinearGradient(0, h*0.8, 0, h);
-      groundG.addColorStop(0, 'rgba(120,0,200,0)');
-      groundG.addColorStop(1, 'rgba(120,0,200,0.3)');
-      ctx.fillStyle = groundG;
-      ctx.fillRect(0, h*0.8, w, h*0.2);
+      const gg = ctx.createLinearGradient(0,h*.8,0,h);
+      gg.addColorStop(0,'rgba(120,0,200,0)'); gg.addColorStop(1,'rgba(120,0,200,0.3)');
+      ctx.fillStyle=gg; ctx.fillRect(0,h*.8,w,h*.2);
     }
   },
   {
     id: 'sunset', label: 'Sunset', icon: '🌅',
     draw(ctx, w, h) {
-      const g = ctx.createLinearGradient(0, 0, 0, h);
-      g.addColorStop(0,    '#1a0533');
-      g.addColorStop(0.3,  '#d4275a');
-      g.addColorStop(0.55, '#f5872a');
-      g.addColorStop(0.75, '#fdd06a');
-      g.addColorStop(1,    '#e84c1e');
-      ctx.fillStyle = g;
-      ctx.fillRect(0, 0, w, h);
-
-      // Sun
+      const g = ctx.createLinearGradient(0,0,0,h);
+      g.addColorStop(0,'#1a0533'); g.addColorStop(.3,'#d4275a');
+      g.addColorStop(.55,'#f5872a'); g.addColorStop(.75,'#fdd06a'); g.addColorStop(1,'#e84c1e');
+      ctx.fillStyle=g; ctx.fillRect(0,0,w,h);
       ctx.save();
-      ctx.beginPath();
-      ctx.arc(w/2, h * 0.62, h * 0.14, 0, Math.PI * 2);
-      ctx.fillStyle = '#fffde0';
-      ctx.shadowBlur = 60; ctx.shadowColor = '#ffe080';
-      ctx.fill();
+      ctx.beginPath(); ctx.arc(w/2,h*.62,h*.14,0,Math.PI*2);
+      ctx.fillStyle='#fffde0'; ctx.shadowBlur=60; ctx.shadowColor='#ffe080'; ctx.fill();
       ctx.restore();
-
-      // Horizon reflection
-      const reflG = ctx.createLinearGradient(0, h*0.65, 0, h);
-      reflG.addColorStop(0, 'rgba(255,200,60,0.3)');
-      reflG.addColorStop(1, 'rgba(200,40,20,0.1)');
-      ctx.fillStyle = reflG;
-      ctx.fillRect(0, h*0.65, w, h*0.35);
-
-      // Horizon line
-      ctx.fillStyle = 'rgba(0,0,0,0.15)';
-      ctx.fillRect(0, h*0.65, w, 2);
+      const rg = ctx.createLinearGradient(0,h*.65,0,h);
+      rg.addColorStop(0,'rgba(255,200,60,.3)'); rg.addColorStop(1,'rgba(200,40,20,.1)');
+      ctx.fillStyle=rg; ctx.fillRect(0,h*.65,w,h*.35);
+      ctx.fillStyle='rgba(0,0,0,.15)'; ctx.fillRect(0,h*.65,w,2);
     }
   },
   {
     id: 'forest', label: 'Forest', icon: '🌿',
     draw(ctx, w, h) {
-      // Sky
-      const g = ctx.createLinearGradient(0, 0, 0, h*0.5);
-      g.addColorStop(0, '#0a1f0f');
-      g.addColorStop(1, '#153320');
-      ctx.fillStyle = g;
-      ctx.fillRect(0, 0, w, h);
-
-      // Ground
-      const gg = ctx.createLinearGradient(0, h*0.7, 0, h);
-      gg.addColorStop(0, '#0d2a12');
-      gg.addColorStop(1, '#050f07');
-      ctx.fillStyle = gg;
-      ctx.fillRect(0, h*0.7, w, h*0.3);
-
-      // Trees
-      ctx.fillStyle = '#050f07';
-      const drawTree = (x, baseY, trunkH, trunkW, coneH, coneW) => {
-        ctx.fillRect(x - trunkW/2, baseY - trunkH, trunkW, trunkH);
-        ctx.beginPath();
-        ctx.moveTo(x, baseY - trunkH - coneH);
-        ctx.lineTo(x - coneW/2, baseY - trunkH + 10);
-        ctx.lineTo(x + coneW/2, baseY - trunkH + 10);
-        ctx.closePath(); ctx.fill();
-        ctx.beginPath();
-        ctx.moveTo(x, baseY - trunkH - coneH * 1.5);
-        ctx.lineTo(x - coneW*0.7/2, baseY - trunkH - coneH * 0.4);
-        ctx.lineTo(x + coneW*0.7/2, baseY - trunkH - coneH * 0.4);
-        ctx.closePath(); ctx.fill();
+      const g = ctx.createLinearGradient(0,0,0,h*.5);
+      g.addColorStop(0,'#0a1f0f'); g.addColorStop(1,'#153320');
+      ctx.fillStyle=g; ctx.fillRect(0,0,w,h);
+      const gg = ctx.createLinearGradient(0,h*.7,0,h);
+      gg.addColorStop(0,'#0d2a12'); gg.addColorStop(1,'#050f07');
+      ctx.fillStyle=gg; ctx.fillRect(0,h*.7,w,h*.3);
+      ctx.fillStyle='#050f07';
+      const t = (x,by,th,tw,ch,cw) => {
+        ctx.fillRect(x-tw/2,by-th,tw,th);
+        ctx.beginPath(); ctx.moveTo(x,by-th-ch); ctx.lineTo(x-cw/2,by-th+10); ctx.lineTo(x+cw/2,by-th+10); ctx.closePath(); ctx.fill();
+        ctx.beginPath(); ctx.moveTo(x,by-th-ch*1.5); ctx.lineTo(x-cw*.35,by-th-ch*.4); ctx.lineTo(x+cw*.35,by-th-ch*.4); ctx.closePath(); ctx.fill();
       };
-      drawTree(30, h*0.7, 80, 14, 120, 70);
-      drawTree(120, h*0.7, 100, 16, 150, 90);
-      drawTree(w-30, h*0.7, 80, 14, 120, 70);
-      drawTree(w-120, h*0.7, 100, 16, 150, 90);
-      drawTree(0, h*0.7, 60, 12, 100, 60);
-      drawTree(w, h*0.7, 60, 12, 100, 60);
-
-      // Fireflies
+      t(30,h*.7,80,14,120,70); t(120,h*.7,100,16,150,90);
+      t(w-30,h*.7,80,14,120,70); t(w-120,h*.7,100,16,150,90);
       ctx.save();
-      for (let i = 0; i < 25; i++) {
-        const x = 40 + Math.random() * (w - 80);
-        const y = h * 0.2 + Math.random() * h * 0.5;
-        ctx.shadowBlur = 10; ctx.shadowColor = '#aaff88';
-        ctx.fillStyle = 'rgba(180,255,120,0.7)';
-        ctx.beginPath(); ctx.arc(x, y, 1.5, 0, Math.PI * 2); ctx.fill();
+      for (let i=0;i<25;i++) {
+        const x=40+Math.random()*(w-80), y=h*.2+Math.random()*h*.5;
+        ctx.shadowBlur=10; ctx.shadowColor='#aaff88'; ctx.fillStyle='rgba(180,255,120,.7)';
+        ctx.beginPath(); ctx.arc(x,y,1.5,0,Math.PI*2); ctx.fill();
       }
       ctx.restore();
     }
@@ -148,89 +90,54 @@ const THEMES = [
   {
     id: 'studio', label: 'Studio', icon: '⬜',
     draw(ctx, w, h) {
-      const g = ctx.createRadialGradient(w/2, h*0.4, 0, w/2, h*0.4, w*0.7);
-      g.addColorStop(0,   '#f8f4ee');
-      g.addColorStop(0.6, '#e8e0d4');
-      g.addColorStop(1,   '#c8bfb0');
-      ctx.fillStyle = g;
-      ctx.fillRect(0, 0, w, h);
-
-      ctx.fillStyle = 'rgba(0,0,0,0.06)';
-      ctx.fillRect(0, h*0.7, w, h*0.3);
-
-      const vig = ctx.createRadialGradient(w/2, h/2, h*0.3, w/2, h/2, w*0.8);
-      vig.addColorStop(0, 'transparent');
-      vig.addColorStop(1, 'rgba(100,80,60,0.3)');
-      ctx.fillStyle = vig;
-      ctx.fillRect(0, 0, w, h);
+      const g = ctx.createRadialGradient(w/2,h*.4,0,w/2,h*.4,w*.7);
+      g.addColorStop(0,'#f8f4ee'); g.addColorStop(.6,'#e8e0d4'); g.addColorStop(1,'#c8bfb0');
+      ctx.fillStyle=g; ctx.fillRect(0,0,w,h);
+      ctx.fillStyle='rgba(0,0,0,.06)'; ctx.fillRect(0,h*.7,w,h*.3);
+      const v = ctx.createRadialGradient(w/2,h/2,h*.3,w/2,h/2,w*.8);
+      v.addColorStop(0,'transparent'); v.addColorStop(1,'rgba(100,80,60,.3)');
+      ctx.fillStyle=v; ctx.fillRect(0,0,w,h);
     }
   },
   {
     id: 'space', label: 'Outer Space', icon: '🚀',
     draw(ctx, w, h) {
-      ctx.fillStyle = '#02020f';
-      ctx.fillRect(0, 0, w, h);
-
-      // Stars
+      ctx.fillStyle='#02020f'; ctx.fillRect(0,0,w,h);
       ctx.save();
-      for (let i = 0; i < 200; i++) {
-        const x = Math.random() * w;
-        const y = Math.random() * h;
-        const r = Math.random() * 1.5;
-        const alpha = 0.3 + Math.random() * 0.7;
-        ctx.fillStyle = `rgba(255,255,255,${alpha})`;
-        ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+      for (let i=0;i<200;i++) {
+        const x=Math.random()*w,y=Math.random()*h,r=Math.random()*1.5,a=.3+Math.random()*.7;
+        ctx.fillStyle=`rgba(255,255,255,${a})`; ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
       }
       ctx.restore();
-
-      // Nebula
-      const neb = ctx.createRadialGradient(w*0.7, h*0.3, 0, w*0.7, h*0.3, w*0.4);
-      neb.addColorStop(0,   'rgba(80,0,160,0.4)');
-      neb.addColorStop(0.5, 'rgba(0,80,160,0.2)');
-      neb.addColorStop(1,   'transparent');
-      ctx.fillStyle = neb; ctx.fillRect(0, 0, w, h);
-
-      const neb2 = ctx.createRadialGradient(w*0.2, h*0.7, 0, w*0.2, h*0.7, w*0.3);
-      neb2.addColorStop(0, 'rgba(160,0,80,0.3)');
-      neb2.addColorStop(1, 'transparent');
-      ctx.fillStyle = neb2; ctx.fillRect(0, 0, w, h);
-
-      // Planet
+      const n1=ctx.createRadialGradient(w*.7,h*.3,0,w*.7,h*.3,w*.4);
+      n1.addColorStop(0,'rgba(80,0,160,.4)'); n1.addColorStop(.5,'rgba(0,80,160,.2)'); n1.addColorStop(1,'transparent');
+      ctx.fillStyle=n1; ctx.fillRect(0,0,w,h);
+      const n2=ctx.createRadialGradient(w*.2,h*.7,0,w*.2,h*.7,w*.3);
+      n2.addColorStop(0,'rgba(160,0,80,.3)'); n2.addColorStop(1,'transparent');
+      ctx.fillStyle=n2; ctx.fillRect(0,0,w,h);
       ctx.save();
-      ctx.beginPath();
-      ctx.arc(w*0.85, h*0.15, 55, 0, Math.PI * 2);
-      const planetG = ctx.createRadialGradient(w*0.85-15, h*0.15-15, 5, w*0.85, h*0.15, 55);
-      planetG.addColorStop(0, '#c0a0ff');
-      planetG.addColorStop(1, '#4400cc');
-      ctx.fillStyle = planetG; ctx.fill();
-      ctx.strokeStyle = 'rgba(200,180,255,0.5)'; ctx.lineWidth = 6;
-      ctx.beginPath(); ctx.ellipse(w*0.85, h*0.15, 80, 16, -0.3, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(w*.85,h*.15,55,0,Math.PI*2);
+      const pg=ctx.createRadialGradient(w*.85-15,h*.15-15,5,w*.85,h*.15,55);
+      pg.addColorStop(0,'#c0a0ff'); pg.addColorStop(1,'#4400cc');
+      ctx.fillStyle=pg; ctx.fill();
+      ctx.strokeStyle='rgba(200,180,255,.5)'; ctx.lineWidth=6;
+      ctx.beginPath(); ctx.ellipse(w*.85,h*.15,80,16,-.3,0,Math.PI*2); ctx.stroke();
       ctx.restore();
     }
   },
   {
     id: 'confetti', label: 'Party!', icon: '🎉',
     draw(ctx, w, h) {
-      const g = ctx.createLinearGradient(0, 0, w, h);
-      g.addColorStop(0, '#1a0a2e');
-      g.addColorStop(1, '#0a1a2e');
-      ctx.fillStyle = g;
-      ctx.fillRect(0, 0, w, h);
-
-      const colors = ['#ff2d55','#f5c842','#5ecb7a','#00c8ff','#c066ff','#ff9500'];
+      const g=ctx.createLinearGradient(0,0,w,h);
+      g.addColorStop(0,'#1a0a2e'); g.addColorStop(1,'#0a1a2e');
+      ctx.fillStyle=g; ctx.fillRect(0,0,w,h);
+      const colors=['#ff2d55','#f5c842','#5ecb7a','#00c8ff','#c066ff','#ff9500'];
       ctx.save();
-      for (let i = 0; i < 120; i++) {
-        const x = Math.random() * w;
-        const y = Math.random() * h;
-        const sw = 4 + Math.random() * 8;
-        const sh = 2 + Math.random() * 4;
-        const rot = Math.random() * Math.PI;
-        ctx.save();
-        ctx.translate(x, y); ctx.rotate(rot);
-        ctx.fillStyle = colors[Math.floor(Math.random() * colors.length)];
-        ctx.globalAlpha = 0.6 + Math.random() * 0.4;
-        ctx.fillRect(-sw/2, -sh/2, sw, sh);
-        ctx.restore();
+      for (let i=0;i<120;i++) {
+        const x=Math.random()*w,y=Math.random()*h,sw=4+Math.random()*8,sh=2+Math.random()*4,rot=Math.random()*Math.PI;
+        ctx.save(); ctx.translate(x,y); ctx.rotate(rot);
+        ctx.fillStyle=colors[Math.floor(Math.random()*colors.length)];
+        ctx.globalAlpha=.6+Math.random()*.4; ctx.fillRect(-sw/2,-sh/2,sw,sh); ctx.restore();
       }
       ctx.restore();
     }
@@ -239,99 +146,44 @@ const THEMES = [
 
 // ─── Frames ──────────────────────────────────────────────────────────────────
 const FRAMES = [
+  { id:'none', label:'None', icon:'○', draw(ctx,w,h){} },
   {
-    id: 'none', label: 'None', icon: '○',
-    draw(ctx, w, h) {}
-  },
-  {
-    id: 'classic', label: 'Classic', icon: '🟫',
-    draw(ctx, w, h) {
-      const bw = 18;
-      ctx.strokeStyle = '#c8a060'; ctx.lineWidth = bw;
-      ctx.strokeRect(bw/2, bw/2, w - bw, h - bw);
-      ctx.strokeStyle = '#8a5a20'; ctx.lineWidth = 2;
-      ctx.strokeRect(bw + 6, bw + 6, w - bw*2 - 12, h - bw*2 - 12);
-
-      const drawCorner = (cx, cy, dx, dy) => {
-        ctx.strokeStyle = '#c8a060'; ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.moveTo(cx + dx * 8, cy); ctx.lineTo(cx, cy); ctx.lineTo(cx, cy + dy * 8);
-        ctx.stroke();
-      };
-      const m = bw + 10;
-      drawCorner(m, m, 1, 1);       drawCorner(w-m, m, -1, 1);
-      drawCorner(m, h-m, 1, -1);    drawCorner(w-m, h-m, -1, -1);
+    id:'classic', label:'Classic', icon:'🟫',
+    draw(ctx,w,h) {
+      const bw=18;
+      ctx.strokeStyle='#c8a060'; ctx.lineWidth=bw; ctx.strokeRect(bw/2,bw/2,w-bw,h-bw);
+      ctx.strokeStyle='#8a5a20'; ctx.lineWidth=2; ctx.strokeRect(bw+6,bw+6,w-bw*2-12,h-bw*2-12);
+      const dc=(cx,cy,dx,dy)=>{ ctx.strokeStyle='#c8a060'; ctx.lineWidth=3; ctx.beginPath(); ctx.moveTo(cx+dx*8,cy); ctx.lineTo(cx,cy); ctx.lineTo(cx,cy+dy*8); ctx.stroke(); };
+      const m=bw+10; dc(m,m,1,1); dc(w-m,m,-1,1); dc(m,h-m,1,-1); dc(w-m,h-m,-1,-1);
     }
   },
   {
-    id: 'polaroid', label: 'Polaroid', icon: '📷',
-    draw(ctx, w, h) {
-      const top = 20, side = 20, bottom = 70;
-      ctx.fillStyle = 'rgba(255,255,255,0.95)';
-      ctx.fillRect(0, 0, w, top);
-      ctx.fillRect(0, 0, side, h);
-      ctx.fillRect(w-side, 0, side, h);
-      ctx.fillRect(0, h-bottom, w, bottom);
-
-      ctx.strokeStyle = 'rgba(0,0,0,0.15)'; ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(side + 20, h - bottom + 40);
-      ctx.lineTo(w - side - 20, h - bottom + 40);
-      ctx.stroke();
-
-      const sh = ctx.createLinearGradient(side, 0, side + 10, 0);
-      sh.addColorStop(0, 'rgba(0,0,0,0.15)');
-      sh.addColorStop(1, 'transparent');
-      ctx.fillStyle = sh;
-      ctx.fillRect(side, top, 12, h - top - bottom);
+    id:'polaroid', label:'Polaroid', icon:'📷',
+    draw(ctx,w,h) {
+      const top=20,side=20,bot=70;
+      ctx.fillStyle='rgba(255,255,255,.95)';
+      ctx.fillRect(0,0,w,top); ctx.fillRect(0,0,side,h); ctx.fillRect(w-side,0,side,h); ctx.fillRect(0,h-bot,w,bot);
+      ctx.strokeStyle='rgba(0,0,0,.15)'; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(side+20,h-bot+40); ctx.lineTo(w-side-20,h-bot+40); ctx.stroke();
     }
   },
   {
-    id: 'neon-border', label: 'Neon', icon: '💜',
-    draw(ctx, w, h) {
-      const bw = 6;
-      ['#ff00ff', '#00ffff'].forEach((c, i) => {
-        ctx.save();
-        ctx.shadowBlur = 20 + i * 10; ctx.shadowColor = c;
-        ctx.strokeStyle = c; ctx.lineWidth = bw;
-        const off = bw/2 + i * 8;
-        ctx.strokeRect(off, off, w - off*2, h - off*2);
-        ctx.restore();
-      });
-
-      ctx.save();
-      ctx.fillStyle = '#ffffff'; ctx.shadowBlur = 20; ctx.shadowColor = '#ffffff';
-      [[0,0],[w,0],[0,h],[w,h]].forEach(([cx, cy]) => {
-        ctx.beginPath(); ctx.arc(cx, cy, 20, 0, Math.PI*2); ctx.fill();
-      });
+    id:'neon-border', label:'Neon', icon:'💜',
+    draw(ctx,w,h) {
+      ['#ff00ff','#00ffff'].forEach((c,i)=>{ ctx.save(); ctx.shadowBlur=20+i*10; ctx.shadowColor=c; ctx.strokeStyle=c; ctx.lineWidth=6; const o=3+i*8; ctx.strokeRect(o,o,w-o*2,h-o*2); ctx.restore(); });
+      ctx.save(); ctx.fillStyle='#fff'; ctx.shadowBlur=20; ctx.shadowColor='#fff';
+      [[0,0],[w,0],[0,h],[w,h]].forEach(([cx,cy])=>{ ctx.beginPath(); ctx.arc(cx,cy,20,0,Math.PI*2); ctx.fill(); });
       ctx.restore();
     }
   },
   {
-    id: 'hearts', label: 'Love', icon: '💕',
-    draw(ctx, w, h) {
-      const vig = ctx.createRadialGradient(w/2, h/2, h*0.25, w/2, h/2, w*0.6);
-      vig.addColorStop(0,   'transparent');
-      vig.addColorStop(0.8, 'transparent');
-      vig.addColorStop(1,   'rgba(255,100,150,0.4)');
-      ctx.fillStyle = vig; ctx.fillRect(0, 0, w, h);
-
-      const drawHeart = (x, y, size, alpha) => {
-        ctx.save();
-        ctx.globalAlpha = alpha; ctx.fillStyle = '#ff6090';
-        ctx.beginPath();
-        ctx.moveTo(x, y + size * 0.3);
-        ctx.bezierCurveTo(x, y, x - size, y, x - size, y + size * 0.3);
-        ctx.bezierCurveTo(x - size, y + size * 0.65, x, y + size, x, y + size * 1.2);
-        ctx.bezierCurveTo(x, y + size, x + size, y + size * 0.65, x + size, y + size * 0.3);
-        ctx.bezierCurveTo(x + size, y, x, y, x, y + size * 0.3);
-        ctx.fill(); ctx.restore();
-      };
-
-      for (let i = 0; i < 12; i++) {
-        drawHeart(30 + Math.random() * 40, i * (h/12) + 10, 6 + Math.random() * 6, 0.3 + Math.random() * 0.5);
-        drawHeart(w - 70 + Math.random() * 40, i * (h/12) + 10, 6 + Math.random() * 6, 0.3 + Math.random() * 0.5);
-      }
+    id:'hearts', label:'Love', icon:'💕',
+    draw(ctx,w,h) {
+      const v=ctx.createRadialGradient(w/2,h/2,h*.25,w/2,h/2,w*.6);
+      v.addColorStop(0,'transparent'); v.addColorStop(.8,'transparent'); v.addColorStop(1,'rgba(255,100,150,.4)');
+      ctx.fillStyle=v; ctx.fillRect(0,0,w,h);
+      const dh=(x,y,s,a)=>{ ctx.save(); ctx.globalAlpha=a; ctx.fillStyle='#ff6090'; ctx.beginPath(); ctx.moveTo(x,y+s*.3); ctx.bezierCurveTo(x,y,x-s,y,x-s,y+s*.3); ctx.bezierCurveTo(x-s,y+s*.65,x,y+s,x,y+s*1.2); ctx.bezierCurveTo(x,y+s,x+s,y+s*.65,x+s,y+s*.3); ctx.bezierCurveTo(x+s,y,x,y,x,y+s*.3); ctx.fill(); ctx.restore(); };
+      for (let i=0;i<12;i++) { dh(30+Math.random()*40,i*(h/12)+10,6+Math.random()*6,.3+Math.random()*.5); dh(w-70+Math.random()*40,i*(h/12)+10,6+Math.random()*6,.3+Math.random()*.5); }
     }
   }
 ];
@@ -340,8 +192,7 @@ const FRAMES = [
 class PhotoboothCompositor {
   constructor(canvasEl) {
     this.canvas = canvasEl;
-    this.ctx = canvasEl.getContext('2d');
-
+    this.ctx    = canvasEl.getContext('2d');
     this.W = 900;
     this.H = 540;
     this.canvas.width  = this.W;
@@ -350,40 +201,32 @@ class PhotoboothCompositor {
     this.themeIdx = 0;
     this.frameIdx = 0;
 
-    // Latest segmented person frames (from segmentation pipelines)
-    this.localMask  = null;
-    this.remoteMask = null;
+    // mySlot: 0 = I joined first (left), 1 = I joined second (right)
+    // Set via setMySlot() once server sends 'assigned-slot'
+    this.mySlot = 0;
 
-    // Offscreen canvas where both masks are merged BEFORE hitting the main canvas.
-    // Doing the OR blend here (on a blank surface) gives a true pixel-wise union
-    // unaffected by the background that has already been painted on the main canvas.
-    this.combinedMask        = document.createElement('canvas');
-    this.combinedMask.width  = this.W;
-    this.combinedMask.height = this.H;
+    this.localMask  = null; // my segmented video frame
+    this.remoteMask = null; // peer's segmented video frame
 
-    this.running   = false;
-    this.peerReady = false;
-    this._raf      = null;
-
-    // Pre-generate random data so themes with random elements don't flicker
+    this.running = false;
+    this._raf    = null;
     this._seedRandom();
   }
 
-  _seedRandom() {
-    this._rdata = Array.from({ length: 300 }, () => ({
-      x: Math.random(), y: Math.random(), r: Math.random(),
-      a: Math.random(), rot: Math.random(), sw: Math.random(), sh: Math.random()
-    }));
-  }
+  // ── Public API ──────────────────────────────────────────────────────────────
 
-  setTheme(idx) { this.themeIdx = idx; }
-  setFrame(idx) { this.frameIdx = idx; }
+  setTheme(idx)      { this.themeIdx = idx; }
+  setFrame(idx)      { this.frameIdx = idx; }
+  setMySlot(slot)    { this.mySlot   = slot; }          // 0 or 1
 
   updateLocalMask(canvas)  { this.localMask  = canvas; }
   updateRemoteMask(canvas) { this.remoteMask = canvas; }
 
   start() { this.running = true;  this._loop(); }
   stop()  { this.running = false; if (this._raf) cancelAnimationFrame(this._raf); }
+  snapshot() { return this.canvas.toDataURL('image/jpeg', 0.92); }
+
+  // ── Render loop ─────────────────────────────────────────────────────────────
 
   _loop() {
     if (!this.running) return;
@@ -391,120 +234,119 @@ class PhotoboothCompositor {
     this._raf = requestAnimationFrame(() => this._loop());
   }
 
-  /**
-   * Draw a single mask canvas scaled (cover mode) into the given context.
-   * @param {HTMLCanvasElement} maskCanvas  - source mask
-   * @param {boolean}          isLocal     - true → mirror horizontally (selfie)
-   * @param {CanvasRenderingContext2D} targetCtx - destination (defaults to main ctx)
-   */
-  _drawMaskScaled(maskCanvas, isLocal, targetCtx) {
-    const ctx  = targetCtx || this.ctx;
-    const { W, H } = this;
-    const srcW = maskCanvas.width;
-    const srcH = maskCanvas.height;
-
-    if (srcW === 0 || srcH === 0) {
-      console.warn(`[Canvas] ${isLocal ? 'Local' : 'Remote'} mask has 0 dimensions`);
-      return;
-    }
-
-    // Scale to fill canvas (cover mode)
-    const scale = Math.max(W / srcW, H / srcH);
-    const dw = srcW * scale;
-    const dh = srcH * scale;
-    let dx = (W - dw) / 2;
-    let dy = (H - dh) / 2;
-
-    ctx.save();
-    if (isLocal) {
-      // Mirror so the local user sees a natural selfie reflection
-      ctx.translate(W / 2, 0);
-      ctx.scale(-1, 1);
-      dx = -W / 2 + dx;
-    }
-    ctx.drawImage(maskCanvas, dx, dy, dw, dh);
-    ctx.restore();
-  }
-
   _draw() {
     const { ctx, W, H } = this;
     ctx.clearRect(0, 0, W, H);
 
-    // 1. Themed background
+    // 1. Themed background (always full canvas)
     this._drawTheme();
 
-    // 2. Merge both masks into the offscreen combinedMask canvas FIRST.
-    //
-    //    Why offscreen? If we applied `lighten` directly on the main canvas
-    //    after the background is already painted, the lighten blend competes
-    //    with the background pixels and one mask drowns out the other.
-    //    By compositing on a blank offscreen surface we get a true OR union,
-    //    then stamp that single merged image onto the main canvas. Both viewers
-    //    see the same result regardless of which mask arrived first.
-    const mc   = this.combinedMask;
-    const mctx = mc.getContext('2d');
-    mctx.clearRect(0, 0, W, H);
+    const hasLocal  = !!this.localMask;
+    const hasRemote = !!this.remoteMask;
 
-    if (this.remoteMask) {
-      mctx.globalCompositeOperation = 'source-over';
-      this._drawMaskScaled(this.remoteMask, false, mctx);
+    if (hasLocal && hasRemote) {
+      // ── Both people present ───────────────────────────────────────────────
+      // mySlot 0 → I am on the LEFT,  peer is on the RIGHT
+      // mySlot 1 → I am on the RIGHT, peer is on the LEFT
+      const half = W / 2;
+
+      const myRegion   = this.mySlot === 0
+        ? { x: 0,    y: 0, w: half, h: H }
+        : { x: half, y: 0, w: half, h: H };
+
+      const peerRegion = this.mySlot === 0
+        ? { x: half, y: 0, w: half, h: H }
+        : { x: 0,    y: 0, w: half, h: H };
+
+      // Draw me into my region (mirrored — selfie feel)
+      ctx.save();
+      ctx.beginPath(); ctx.rect(myRegion.x, myRegion.y, myRegion.w, myRegion.h); ctx.clip();
+      this._drawPerson(this.localMask, myRegion.x, myRegion.y, myRegion.w, myRegion.h, /*mirror=*/true);
+      ctx.restore();
+
+      // Subtle centre divider
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+      ctx.lineWidth   = 1;
+      ctx.setLineDash([5, 7]);
+      ctx.beginPath(); ctx.moveTo(half, 0); ctx.lineTo(half, H); ctx.stroke();
+      ctx.restore();
+
+      // Draw peer into their region (natural orientation)
+      ctx.save();
+      ctx.beginPath(); ctx.rect(peerRegion.x, peerRegion.y, peerRegion.w, peerRegion.h); ctx.clip();
+      this._drawPerson(this.remoteMask, peerRegion.x, peerRegion.y, peerRegion.w, peerRegion.h, /*mirror=*/false);
+      ctx.restore();
+
+    } else if (hasLocal) {
+      // Only me — fill full canvas
+      this._drawPerson(this.localMask, 0, 0, W, H, /*mirror=*/true);
+
+    } else if (hasRemote) {
+      // Only peer (edge case) — fill full canvas
+      this._drawPerson(this.remoteMask, 0, 0, W, H, /*mirror=*/false);
     }
 
-    if (this.localMask) {
-      // lighten = pixel-wise max(src, dst) — keeps whichever channel is brighter,
-      // so wherever either mask has content, it shows through.
-      mctx.globalCompositeOperation = 'lighten';
-      this._drawMaskScaled(this.localMask, true, mctx);
-      mctx.globalCompositeOperation = 'source-over'; // reset for next frame
-    }
-
-    // Stamp the merged result onto the main canvas
-    if (this.remoteMask || this.localMask) {
-      ctx.drawImage(mc, 0, 0, W, H);
-    }
-
-    // 3. Decorative frame on top of everything
+    // 2. Decorative frame
     FRAMES[this.frameIdx].draw(ctx, W, H);
 
-    // 4. Date stamp
+    // 3. Date stamp
     this._drawDateStamp();
   }
 
+  /**
+   * Draw a segmented-person canvas (transparent background) into a
+   * destination rectangle, scaled to cover, centred.
+   */
+  _drawPerson(src, dx, dy, dw, dh, mirror) {
+    const sw = src.width, sh = src.height;
+    if (!sw || !sh) return;
+
+    const scale = Math.max(dw / sw, dh / sh);
+    const rw = sw * scale, rh = sh * scale;
+    const rx = dx + (dw - rw) / 2;
+    const ry = dy + (dh - rh) / 2;
+
+    const { ctx } = this;
+    ctx.save();
+    if (mirror) {
+      // Flip around the vertical centre of the destination region
+      ctx.translate(dx + dw, 0);
+      ctx.scale(-1, 1);
+      const fx = (dx + dw) - rx - rw;
+      ctx.drawImage(src, fx, ry, rw, rh);
+    } else {
+      ctx.drawImage(src, rx, ry, rw, rh);
+    }
+    ctx.restore();
+  }
+
+  // ── Helpers ─────────────────────────────────────────────────────────────────
+
   _drawTheme() {
-    // Swap Math.random for seeded version so themes with random elements
-    // render identically each frame (no flickering particles/confetti)
-    const savedRandom = Math.random;
-    let idx = 0;
-    Math.random = () => {
-      const v = this._rdata[idx % this._rdata.length];
-      idx++;
-      return v.x;
-    };
-
+    const saved = Math.random;
+    let i = 0;
+    Math.random = () => this._rdata[i++ % this._rdata.length].v;
     THEMES[this.themeIdx].draw(this.ctx, this.W, this.H);
-
-    Math.random = savedRandom;
+    Math.random = saved;
   }
 
   _drawDateStamp() {
     const { ctx, W, H } = this;
-    const now  = new Date();
-    const date = now.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    const date = new Date().toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' });
     ctx.save();
-    ctx.font          = '12px "Space Mono", monospace';
-    ctx.fillStyle     = 'rgba(255,255,255,0.5)';
-    ctx.textAlign     = 'right';
-    ctx.textBaseline  = 'bottom';
+    ctx.font='12px "Space Mono", monospace'; ctx.fillStyle='rgba(255,255,255,0.5)';
+    ctx.textAlign='right'; ctx.textBaseline='bottom';
     ctx.fillText(date, W - 14, H - 10);
     ctx.restore();
   }
 
-  snapshot() {
-    return this.canvas.toDataURL('image/jpeg', 0.92);
+  _seedRandom() {
+    this._rdata = Array.from({ length: 400 }, () => ({ v: Math.random() }));
   }
 }
 
-// Export globals
-window.THEMES              = THEMES;
-window.FRAMES              = FRAMES;
+// ─── Globals ─────────────────────────────────────────────────────────────────
+window.THEMES               = THEMES;
+window.FRAMES               = FRAMES;
 window.PhotoboothCompositor = PhotoboothCompositor;

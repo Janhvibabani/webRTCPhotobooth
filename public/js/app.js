@@ -11,41 +11,43 @@ let currentRoom  = null;
 let isMuted      = false;
 let isCamOff     = false;
 
-let compositor   = null;
-let localSeg     = null;
-let remoteSeg    = null;
-let segReady     = 0; // count of ready pipelines (we need 2, or 1 before peer joins)
+let compositor        = null;
+let localSeg          = null;
+let remoteSeg         = null;
 let compositorRunning = false;
 
+// mySlot: 0 = first to join (left side), 1 = second to join (right side)
+let mySlot = 0;
+
 // ─── DOM ─────────────────────────────────────────────────────────────────────
-const lobbyEl       = document.getElementById('lobby');
-const boothEl       = document.getElementById('booth');
-const localVideo    = document.getElementById('local-video');
-const remoteVideo   = document.getElementById('remote-video');
-const waitingOverlay= document.getElementById('waiting-overlay');
-const segLoading    = document.getElementById('seg-loading');
-const connDot       = document.getElementById('conn-dot');
-const connText      = document.getElementById('conn-text');
-const roomLabel     = document.getElementById('room-label');
-const shareCodeBig  = document.getElementById('share-code-big');
-const errorMsg      = document.getElementById('error-msg');
-const generatedCode = document.getElementById('room-code-display');
-const photoStrip    = document.getElementById('photo-strip');
-const shutterBtn    = document.getElementById('shutter-btn');
-const countdownEl   = document.getElementById('countdown-overlay');
-const countdownNum  = document.getElementById('countdown-num');
-const flashEl       = document.getElementById('flash-overlay');
-const themeGrid     = document.getElementById('theme-grid');
-const frameGrid     = document.getElementById('frame-grid');
-const canvasEl      = document.getElementById('photobooth-canvas');
+const lobbyEl        = document.getElementById('lobby');
+const boothEl        = document.getElementById('booth');
+const localVideo     = document.getElementById('local-video');
+const remoteVideo    = document.getElementById('remote-video');
+const waitingOverlay = document.getElementById('waiting-overlay');
+const segLoading     = document.getElementById('seg-loading');
+const connDot        = document.getElementById('conn-dot');
+const connText       = document.getElementById('conn-text');
+const roomLabel      = document.getElementById('room-label');
+const shareCodeBig   = document.getElementById('share-code-big');
+const errorMsg       = document.getElementById('error-msg');
+const generatedCode  = document.getElementById('room-code-display');
+const photoStrip     = document.getElementById('photo-strip');
+const shutterBtn     = document.getElementById('shutter-btn');
+const countdownEl    = document.getElementById('countdown-overlay');
+const countdownNum   = document.getElementById('countdown-num');
+const flashEl        = document.getElementById('flash-overlay');
+const themeGrid      = document.getElementById('theme-grid');
+const frameGrid      = document.getElementById('frame-grid');
+const canvasEl       = document.getElementById('photobooth-canvas');
 
 // ─── Init Theme / Frame selectors ────────────────────────────────────────────
 function buildSelectors() {
   THEMES.forEach((t, i) => {
     const btn = document.createElement('button');
-    btn.className   = 'theme-btn' + (i === 0 ? ' active' : '');
-    btn.innerHTML   = `<span class="icon">${t.icon}</span>${t.label}`;
-    btn.onclick     = () => {
+    btn.className = 'theme-btn' + (i === 0 ? ' active' : '');
+    btn.innerHTML = `<span class="icon">${t.icon}</span>${t.label}`;
+    btn.onclick   = () => {
       document.querySelectorAll('.theme-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       compositor?.setTheme(i);
@@ -55,9 +57,9 @@ function buildSelectors() {
 
   FRAMES.forEach((f, i) => {
     const btn = document.createElement('button');
-    btn.className   = 'frame-btn' + (i === 0 ? ' active' : '');
-    btn.innerHTML   = `<span class="icon">${f.icon}</span>${f.label}`;
-    btn.onclick     = () => {
+    btn.className = 'frame-btn' + (i === 0 ? ' active' : '');
+    btn.innerHTML = `<span class="icon">${f.icon}</span>${f.label}`;
+    btn.onclick   = () => {
       document.querySelectorAll('.frame-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       compositor?.setFrame(i);
@@ -124,7 +126,7 @@ async function enterRoom(roomId) {
 
   showBooth(roomId);
 
-  // Initialize compositor
+  // Initialize compositor (slot will be set once server replies)
   compositor = new PhotoboothCompositor(canvasEl);
   compositor.start();
 
@@ -134,16 +136,11 @@ async function enterRoom(roomId) {
   // Connect socket
   socket = io();
   bindSocketEvents();
-  
-  // Wait for socket connection before joining room
+
   if (socket.connected) {
-    console.log('[App] Socket already connected, joining room...');
     socket.emit('join-room', roomId);
   } else {
-    socket.once('connect', () => {
-      console.log('[App] Socket connected, joining room...');
-      socket.emit('join-room', roomId);
-    });
+    socket.once('connect', () => socket.emit('join-room', roomId));
   }
 }
 
@@ -156,15 +153,10 @@ async function initLocalSegmentation() {
 
   await localSeg.init();
   localSeg.start();
-
-  // Drive local segmentation loop
   startSegLoop();
 
-  segReady++;
-  if (segReady >= 1) {
-    segLoading.classList.add('hidden');
-    compositorRunning = true;
-  }
+  segLoading.classList.add('hidden');
+  compositorRunning = true;
 }
 
 async function initRemoteSegmentation() {
@@ -173,13 +165,11 @@ async function initRemoteSegmentation() {
   });
   await remoteSeg.init();
   remoteSeg.start();
-  segReady++;
 }
 
 function startSegLoop() {
   let lastTime = 0;
-  const FPS = 30;
-  const interval = 1000 / FPS;
+  const interval = 1000 / 30; // 30 fps
 
   const tick = (now) => {
     if (now - lastTime >= interval) {
@@ -196,45 +186,45 @@ function startSegLoop() {
 function showBooth(roomId) {
   lobbyEl.classList.remove('active');
   lobbyEl.style.display = 'none';
-
   boothEl.style.display = 'flex';
   requestAnimationFrame(() => boothEl.style.opacity = '1');
   boothEl.classList.add('active');
-
-  roomLabel.textContent   = roomId;
+  roomLabel.textContent    = roomId;
   shareCodeBig.textContent = roomId;
   setStatus('waiting', 'Waiting for partner…');
 }
 
 // ─── Socket Events ────────────────────────────────────────────────────────────
 function bindSocketEvents() {
+
+  // ← NEW: server tells us which slot we are (0 = left, 1 = right)
+  socket.on('assigned-slot', ({ slot }) => {
+    mySlot = slot;
+    compositor.setMySlot(slot);
+    console.log(`[App] Assigned slot ${slot} → ${slot === 0 ? 'LEFT' : 'RIGHT'} side`);
+  });
+
   socket.on('waiting', () => {
-    console.log('[App] Waiting for partner to join...');
     setStatus('waiting', 'Waiting…');
     showWaiting(true);
   });
 
   socket.on('room-full', () => {
-    console.log('[App] Room is full');
     showError('Room is full.');
     cleanupAndGoHome();
   });
 
   socket.on('initiate-call', () => {
-    console.log('[App] Received initiate-call - this client is INITIATOR');
     socket._isInitiator = true;
     if (rtcManager) rtcManager.createOffer();
   });
 
   socket.on('room-ready', async ({ count }) => {
-    console.log(`[App] Room ready with ${count} users`);
     if (count === 2) {
       setStatus('connecting', 'Connecting…');
 
-      // Init remote segmentation pipeline
       await initRemoteSegmentation();
 
-      console.log('[App] Creating WebRTC manager...');
       rtcManager = new WebRTCManager({
         socket,
         roomId: currentRoom,
@@ -244,39 +234,27 @@ function bindSocketEvents() {
       });
 
       if (socket._isInitiator) {
-        console.log('[App] This client is initiator, creating offer...');
         rtcManager.createOffer();
-      } else {
-        console.log('[App] This client is non-initiator, waiting for offer...');
       }
     }
   });
 
   socket.on('peer-disconnected', () => {
-    console.log('[App] Peer disconnected');
     setStatus('disconnected', 'Partner left');
     remoteVideo.srcObject = null;
     compositor.updateRemoteMask(null);
-    compositor.peerReady = false;
     showWaiting(true);
     if (rtcManager) { rtcManager.destroy(); rtcManager = null; }
-    if (remoteSeg)  { remoteSeg.destroy(); remoteSeg = null; }
+    if (remoteSeg)  { remoteSeg.destroy();  remoteSeg  = null; }
   });
 
-  socket.on('disconnect', () => {
-    console.log('[App] Socket disconnected');
-    setStatus('disconnected', 'Disconnected');
-  });
+  socket.on('disconnect', () => setStatus('disconnected', 'Disconnected'));
 }
 
 async function handleRemoteStream(stream) {
-  console.log('[App] Remote stream received');
   remoteVideo.srcObject = stream;
   await remoteVideo.play().catch(() => {});
-
-  // Wait for video to have dimensions
   await waitForVideo(remoteVideo);
-  compositor.peerReady = true;
   showWaiting(false);
 }
 
@@ -288,16 +266,11 @@ function waitForVideo(video) {
 }
 
 function handleConnectionState(state) {
-  console.log(`[App] Connection state changed to: ${state}`);
   if (state === 'connected') {
-    console.log('[App] ✓ Peers are connected!');
     setStatus('connected', 'Connected ✓');
   } else if (state === 'disconnected' || state === 'failed') {
-    console.log(`[App] Connection ${state}`);
     setStatus('disconnected', 'Connection lost');
     showWaiting(true);
-  } else if (state === 'connecting') {
-    console.log('[App] Peers are connecting...');
   }
 }
 
@@ -333,22 +306,21 @@ function hangUp() { cleanupAndGoHome(); }
 
 function cleanupAndGoHome() {
   if (rtcManager)  { rtcManager.destroy(); rtcManager = null; }
-  if (localSeg)    { localSeg.destroy(); localSeg = null; }
-  if (remoteSeg)   { remoteSeg.destroy(); remoteSeg = null; }
-  if (compositor)  { compositor.stop(); compositor = null; }
+  if (localSeg)    { localSeg.destroy();   localSeg   = null; }
+  if (remoteSeg)   { remoteSeg.destroy();  remoteSeg  = null; }
+  if (compositor)  { compositor.stop();    compositor = null; }
   if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
   if (socket)      { socket.disconnect(); socket = null; }
 
   localVideo.srcObject  = null;
   remoteVideo.srcObject = null;
   currentRoom = null;
-  segReady    = 0;
+  mySlot      = 0;
 
   boothEl.classList.remove('active');
   boothEl.style.opacity = '0';
   boothEl.style.display = 'none';
 
-  // Clear photo strip
   photoStrip.innerHTML = '<p class="strip-hint">Your photos appear here ↓</p>';
 
   lobbyEl.style.display = 'flex';
@@ -371,9 +343,6 @@ function startCountdown() {
   let count = 3;
   countdownEl.classList.add('active');
   countdownNum.textContent = count;
-  countdownNum.style.animation = 'none';
-  void countdownNum.offsetWidth; // reflow
-  countdownNum.style.animation = '';
 
   const tick = () => {
     count--;
@@ -385,37 +354,29 @@ function startCountdown() {
       return;
     }
     countdownNum.textContent = count;
-    // Re-trigger animation
     countdownNum.style.animation = 'none';
     void countdownNum.offsetWidth;
     countdownNum.style.animation = 'countdown-pop 1s ease-out';
     setTimeout(tick, 1000);
   };
-
   setTimeout(tick, 1000);
 }
 
 function capturePhoto() {
-  // Flash
   flashEl.classList.add('flash');
   setTimeout(() => flashEl.classList.remove('flash'), 200);
 
-  // Grab snapshot from compositor
   const dataUrl = compositor.snapshot();
 
-  // Remove hint text on first photo
   const hint = photoStrip.querySelector('.strip-hint');
   if (hint) hint.remove();
 
-  // Create thumbnail in strip
   const img = document.createElement('img');
   img.className = 'strip-photo';
   img.src       = dataUrl;
   img.title     = 'Click to download';
   img.onclick   = () => downloadPhoto(dataUrl);
   photoStrip.appendChild(img);
-
-  // Auto-scroll to newest
   photoStrip.scrollTo({ left: photoStrip.scrollWidth, behavior: 'smooth' });
 }
 
