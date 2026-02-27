@@ -134,7 +134,17 @@ async function enterRoom(roomId) {
   // Connect socket
   socket = io();
   bindSocketEvents();
-  socket.emit('join-room', roomId);
+  
+  // Wait for socket connection before joining room
+  if (socket.connected) {
+    console.log('[App] Socket already connected, joining room...');
+    socket.emit('join-room', roomId);
+  } else {
+    socket.once('connect', () => {
+      console.log('[App] Socket connected, joining room...');
+      socket.emit('join-room', roomId);
+    });
+  }
 }
 
 async function initLocalSegmentation() {
@@ -199,27 +209,32 @@ function showBooth(roomId) {
 // ─── Socket Events ────────────────────────────────────────────────────────────
 function bindSocketEvents() {
   socket.on('waiting', () => {
+    console.log('[App] Waiting for partner to join...');
     setStatus('waiting', 'Waiting…');
     showWaiting(true);
   });
 
   socket.on('room-full', () => {
+    console.log('[App] Room is full');
     showError('Room is full.');
     cleanupAndGoHome();
   });
 
   socket.on('initiate-call', () => {
+    console.log('[App] Received initiate-call - this client is INITIATOR');
     socket._isInitiator = true;
     if (rtcManager) rtcManager.createOffer();
   });
 
   socket.on('room-ready', async ({ count }) => {
+    console.log(`[App] Room ready with ${count} users`);
     if (count === 2) {
       setStatus('connecting', 'Connecting…');
 
       // Init remote segmentation pipeline
       await initRemoteSegmentation();
 
+      console.log('[App] Creating WebRTC manager...');
       rtcManager = new WebRTCManager({
         socket,
         roomId: currentRoom,
@@ -228,11 +243,17 @@ function bindSocketEvents() {
         onConnectionStateChange: handleConnectionState
       });
 
-      if (socket._isInitiator) rtcManager.createOffer();
+      if (socket._isInitiator) {
+        console.log('[App] This client is initiator, creating offer...');
+        rtcManager.createOffer();
+      } else {
+        console.log('[App] This client is non-initiator, waiting for offer...');
+      }
     }
   });
 
   socket.on('peer-disconnected', () => {
+    console.log('[App] Peer disconnected');
     setStatus('disconnected', 'Partner left');
     remoteVideo.srcObject = null;
     compositor.updateRemoteMask(null);
@@ -242,7 +263,10 @@ function bindSocketEvents() {
     if (remoteSeg)  { remoteSeg.destroy(); remoteSeg = null; }
   });
 
-  socket.on('disconnect', () => setStatus('disconnected', 'Disconnected'));
+  socket.on('disconnect', () => {
+    console.log('[App] Socket disconnected');
+    setStatus('disconnected', 'Disconnected');
+  });
 }
 
 async function handleRemoteStream(stream) {
@@ -264,11 +288,16 @@ function waitForVideo(video) {
 }
 
 function handleConnectionState(state) {
+  console.log(`[App] Connection state changed to: ${state}`);
   if (state === 'connected') {
+    console.log('[App] ✓ Peers are connected!');
     setStatus('connected', 'Connected ✓');
   } else if (state === 'disconnected' || state === 'failed') {
+    console.log(`[App] Connection ${state}`);
     setStatus('disconnected', 'Connection lost');
     showWaiting(true);
+  } else if (state === 'connecting') {
+    console.log('[App] Peers are connecting...');
   }
 }
 

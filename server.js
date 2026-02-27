@@ -46,18 +46,21 @@ io.on('connection', (socket) => {
 
   // Relay WebRTC offer
   socket.on('offer', ({ roomId, offer }) => {
-    console.log(`[Room ${roomId}] Offer from ${socket.id}`);
+    console.log(`[Room ${roomId}] Offer from ${socket.id}:`, offer.type);
     socket.to(roomId).emit('offer', { offer, from: socket.id });
+    console.log(`[Room ${roomId}] Offer relayed to room`);
   });
 
   // Relay WebRTC answer
   socket.on('answer', ({ roomId, answer }) => {
-    console.log(`[Room ${roomId}] Answer from ${socket.id}`);
+    console.log(`[Room ${roomId}] Answer from ${socket.id}:`, answer.type);
     socket.to(roomId).emit('answer', { answer, from: socket.id });
+    console.log(`[Room ${roomId}] Answer relayed to room`);
   });
 
   // Relay ICE candidates
   socket.on('ice-candidate', ({ roomId, candidate }) => {
+    console.log(`[Room ${roomId}] ICE candidate from ${socket.id}:`, candidate.candidate.substring(0, 50) + '...');
     socket.to(roomId).emit('ice-candidate', { candidate, from: socket.id });
   });
 
