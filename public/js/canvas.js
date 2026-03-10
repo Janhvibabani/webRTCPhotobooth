@@ -201,16 +201,118 @@ class PhotoboothCompositor {
     this.themeIdx = 0;
     this.frameIdx = 0;
 
-    // mySlot: 0 = I joined first (left), 1 = I joined second (right)
-    // Set via setMySlot() once server sends 'assigned-slot'
+    // mySlot: 0 = I joined first, 1 = I joined second (for reference)
     this.mySlot = 0;
 
     this.localMask  = null; // my segmented video frame
     this.remoteMask = null; // peer's segmented video frame
 
+    // Position tracking for overlapping layout
+    // { x, y, scale } - allows free positioning
+    // NOTE: Each person can ONLY drag their own local video, not the remote person
+    this.localPos = { x: this.W * 0.25, y: 0, scale: 1.0, isDragging: false, startX: 0, startY: 0 };
+    this.remotePos = { x: this.W * 0.75, y: 0, scale: 1.0, isDragging: false, startX: 0, startY: 0 };
+    this.dragTarget = null; // 'local' only
+
     this.running = false;
     this._raf    = null;
     this._seedRandom();
+
+    // Set up mouse/touch event listeners for dragging
+    this._setupDragListeners();
+  }
+
+  // ── Drag functionality ───────────────────────────────────────────────────────
+
+  _setupDragListeners() {
+    this.canvas.addEventListener('mousedown', (e) => this._onDragStart(e, 'mouse'));
+    this.canvas.addEventListener('mousemove', (e) => this._onDragMove(e, 'mouse'));
+    this.canvas.addEventListener('mouseup', (e) => this._onDragEnd(e, 'mouse'));
+
+    this.canvas.addEventListener('touchstart', (e) => this._onDragStart(e, 'touch'));
+    this.canvas.addEventListener('touchmove', (e) => this._onDragMove(e, 'touch'));
+    this.canvas.addEventListener('touchend', (e) => this._onDragEnd(e, 'touch'));
+
+    this.canvas.style.cursor = 'grab';
+  }
+
+  _getEventPos(e, type) {
+    if (type === 'touch') {
+      const touch = e.touches?.[0];
+      if (!touch) return null;
+      return { x: touch.clientX, y: touch.clientY };
+    } else {
+      return { x: e.clientX, y: e.clientY };
+    }
+  }
+
+  _onDragStart(e, type) {
+    const pos = this._getEventPos(e, type);
+    if (!pos) return;
+
+    const rect = this.canvas.getBoundingClientRect();
+    const canvasX = pos.x - rect.left;
+    const canvasY = pos.y - rect.top;
+
+    // Scale canvas coordinates to actual canvas size
+    const scaleX = this.W / rect.width;
+    const scaleY = this.H / rect.height;
+    const x = canvasX * scaleX;
+    const y = canvasY * scaleY;
+
+    // Only allow dragging YOUR OWN video (local)
+    const localBox = this._getPersonBoundingBox(this.localPos);
+
+    if (this.localMask && this._pointInBox(x, y, localBox)) {
+      this.dragTarget = 'local';
+      this.localPos.isDragging = true;
+      this.localPos.startX = x - this.localPos.x;
+      this.localPos.startY = y - this.localPos.y;
+      this.canvas.style.cursor = 'grabbing';
+    }
+  }
+
+  _onDragMove(e, type) {
+    if (this.dragTarget !== 'local') return;
+
+    const pos = this._getEventPos(e, type);
+    if (!pos) return;
+
+    const rect = this.canvas.getBoundingClientRect();
+    const canvasX = pos.x - rect.left;
+    const canvasY = pos.y - rect.top;
+
+    const scaleX = this.W / rect.width;
+    const scaleY = this.H / rect.height;
+    const x = canvasX * scaleX;
+    const y = canvasY * scaleY;
+
+    this.localPos.x = x - this.localPos.startX;
+    this.localPos.y = y - this.localPos.startY;
+  }
+
+  _onDragEnd(e, type) {
+    if (this.dragTarget === 'local') {
+      this.localPos.isDragging = false;
+      this.dragTarget = null;
+      this.canvas.style.cursor = 'grab';
+    }
+  }
+
+  _getPersonBoundingBox(pos) {
+    // Calculate approximate bounding box for a person (rough estimate)
+    const personWidth = this.W * 0.35;
+    const personHeight = this.H * 0.8;
+    return {
+      x: pos.x - personWidth / 2,
+      y: pos.y,
+      w: personWidth,
+      h: personHeight
+    };
+  }
+
+  _pointInBox(x, y, box) {
+    return x >= box.x && x <= box.x + box.w && y >= box.y && y <= box.y + box.h;
   }
 
   // ── Public API ──────────────────────────────────────────────────────────────
@@ -244,47 +346,17 @@ class PhotoboothCompositor {
     const hasLocal  = !!this.localMask;
     const hasRemote = !!this.remoteMask;
 
-    if (hasLocal && hasRemote) {
-      // ── Both people present ───────────────────────────────────────────────
-      // mySlot 0 → I am on the LEFT,  peer is on the RIGHT
-      // mySlot 1 → I am on the RIGHT, peer is on the LEFT
-      const half = W / 2;
+    // Draw people in overlapping layout:
+    // - Always show local video (mirror) if available
+    // - Show remote if available
+    // Draw in order: local first, then remote (so remote is on top)
+    
+    if (hasLocal) {
+      this._drawPersonAtPos(this.localMask, this.localPos, /*mirror=*/true);
+    }
 
-      const myRegion   = this.mySlot === 0
-        ? { x: 0,    y: 0, w: half, h: H }
-        : { x: half, y: 0, w: half, h: H };
-
-      const peerRegion = this.mySlot === 0
-        ? { x: half, y: 0, w: half, h: H }
-        : { x: 0,    y: 0, w: half, h: H };
-
-      // Draw me into my region (mirrored — selfie feel)
-      ctx.save();
-      ctx.beginPath(); ctx.rect(myRegion.x, myRegion.y, myRegion.w, myRegion.h); ctx.clip();
-      this._drawPerson(this.localMask, myRegion.x, myRegion.y, myRegion.w, myRegion.h, /*mirror=*/true);
-      ctx.restore();
-
-      // Subtle centre divider
-      ctx.save();
-      ctx.strokeStyle = 'rgba(255,255,255,0.12)';
-      ctx.lineWidth   = 1;
-      ctx.setLineDash([5, 7]);
-      ctx.beginPath(); ctx.moveTo(half, 0); ctx.lineTo(half, H); ctx.stroke();
-      ctx.restore();
-
-      // Draw peer into their region (natural orientation)
-      ctx.save();
-      ctx.beginPath(); ctx.rect(peerRegion.x, peerRegion.y, peerRegion.w, peerRegion.h); ctx.clip();
-      this._drawPerson(this.remoteMask, peerRegion.x, peerRegion.y, peerRegion.w, peerRegion.h, /*mirror=*/false);
-      ctx.restore();
-
-    } else if (hasLocal) {
-      // Only me — fill full canvas
-      this._drawPerson(this.localMask, 0, 0, W, H, /*mirror=*/true);
-
-    } else if (hasRemote) {
-      // Only peer (edge case) — fill full canvas
-      this._drawPerson(this.remoteMask, 0, 0, W, H, /*mirror=*/false);
+    if (hasRemote) {
+      this._drawPersonAtPos(this.remoteMask, this.remotePos, /*mirror=*/false);
     }
 
     // 2. Decorative frame
@@ -295,28 +367,40 @@ class PhotoboothCompositor {
   }
 
   /**
-   * Draw a segmented-person canvas (transparent background) into a
-   * destination rectangle, scaled to cover, centred.
+   * Draw a segmented-person canvas at a specific position with scale
    */
-  _drawPerson(src, dx, dy, dw, dh, mirror) {
+  _drawPersonAtPos(src, pos, mirror) {
     const sw = src.width, sh = src.height;
     if (!sw || !sh) return;
 
-    const scale = Math.max(dw / sw, dh / sh);
-    const rw = sw * scale, rh = sh * scale;
-    const rx = dx + (dw - rw) / 2;
-    const ry = dy + (dh - rh) / 2;
-
     const { ctx } = this;
+
+    // Calculate scaled dimensions
+    const personWidth = this.W * 0.35 * pos.scale;
+    const personHeight = this.H * 0.9 * pos.scale;
+    
+    // Calculate aspect-ratio aware sizing
+    const aspectRatio = sw / sh;
+    let dw = personWidth;
+    let dh = personWidth / aspectRatio;
+    
+    if (dh > personHeight) {
+      dh = personHeight;
+      dw = personHeight * aspectRatio;
+    }
+
+    // Position: x is center point, y is top edge
+    const dx = pos.x - dw / 2;
+    const dy = pos.y;
+
     ctx.save();
     if (mirror) {
-      // Flip around the vertical centre of the destination region
-      ctx.translate(dx + dw, 0);
+      // Mirror around the center point of the person
+      ctx.translate(pos.x, 0);
       ctx.scale(-1, 1);
-      const fx = (dx + dw) - rx - rw;
-      ctx.drawImage(src, fx, ry, rw, rh);
+      ctx.drawImage(src, -dw / 2, dy, dw, dh);
     } else {
-      ctx.drawImage(src, rx, ry, rw, rh);
+      ctx.drawImage(src, dx, dy, dw, dh);
     }
     ctx.restore();
   }
